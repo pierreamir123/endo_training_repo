@@ -1,0 +1,12 @@
+# Training deps for PRNet on PRAD. Install into the `endo` conda env:
+#   python -m pip install -r segmentation_model/requirements-train.txt
+#
+# torch/torchvision are the CUDA 12.6 build (RTX 4050). The --index-url line makes
+# pip resolve the +cu126 wheels. For CPU-only, replace with plain torch==2.13.0.
+--extra-index-url https://download.pytorch.org/whl/cu126
+torch==2.13.0+cu126
+torchvision==0.28.0+cu126
+monai==1.6.0
+PyWavelets==1.9.0
+wandb==0.29.0
+tqdm==4.70.0

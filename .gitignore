@@ -1,0 +1,7 @@
+.env
+segmentation_model/runs/
+segmentation_model/wandb/
+wandb/
+__pycache__/
+*.pyc
+dataset/
