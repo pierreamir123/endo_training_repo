@@ -88,7 +88,6 @@ def main():
     opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=a.epochs)
     scaler = torch.amp.GradScaler("cuda", enabled=device == "cuda")
-    wandb.watch(model, log="gradients", log_freq=200)
 
     post_pred = Compose([EnsureType(), AsDiscrete(argmax=True, to_onehot=NUM_CLASSES)])
     post_lbl = Compose([EnsureType(), AsDiscrete(to_onehot=NUM_CLASSES)])
