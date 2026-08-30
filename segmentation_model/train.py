@@ -151,6 +151,24 @@ def main():
 
     run.summary["best/val_dice"] = best
     run.finish()
+
+    # TorchScript export of the best model (fixed CROP input) for code-free inference.
+    if os.path.exists(best_path):
+        ts_path = os.path.join(out_dir, "best.ts.pt")
+        try:
+            model.load_state_dict(torch.load(best_path, map_location=device)["model"])
+            model.eval()
+            example = torch.randn(1, 3, CROP, CROP, device=device)
+            with torch.no_grad():
+                # check_trace off: model.py channel_shuffle() uses random.shuffle, so two
+                # forwards differ. The trace freezes one permutation - fine for inference.
+                ts = torch.jit.trace(model, example, check_trace=False)
+            torch.jit.save(ts, ts_path)
+            shutil.copy(ts_path, os.path.join(a.out, "best.ts.pt"))
+            print("traced:", ts_path)
+        except Exception as e:  # ponytail: never lose the run over a trace failure
+            print("WARN: TorchScript trace failed:", e)
+
     print("done. best val_dice:", best, "| weights:", best_path)
 
 
