@@ -62,6 +62,9 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     if device == "cuda":
         torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.set_float32_matmul_precision("high")
         print("device: cuda |", torch.cuda.get_device_name(0),
               f"| {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB | run:", a.name)
     else:
@@ -80,14 +83,20 @@ def main():
     else:
         tr = Dataset(tr_pairs, train_transforms)
         va = Dataset(va_pairs, eval_transforms)
-    tr_dl = DataLoader(tr, batch_size=a.batch_size, shuffle=True, num_workers=a.workers)
-    va_dl = DataLoader(va, batch_size=1, num_workers=a.workers)
+    _pw = a.workers > 0
+    tr_dl = DataLoader(tr, batch_size=a.batch_size, shuffle=True, num_workers=a.workers,
+                       pin_memory=True, persistent_workers=_pw, prefetch_factor=4 if _pw else None)
+    va_dl = DataLoader(va, batch_size=1, num_workers=a.workers,
+                       pin_memory=True, persistent_workers=_pw)
 
     model = PRNet(in_channels=3, num_classes=NUM_CLASSES, input_size=CROP).to(device)
+    if device == "cuda":
+        model = model.to(memory_format=torch.channels_last)
     loss_fn = DiceFocalLoss(softmax=True, to_onehot_y=True)
     opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=a.epochs)
-    scaler = torch.amp.GradScaler("cuda", enabled=device == "cuda")
+    # Ada does bf16 natively -> no GradScaler (no inf/nan stalls), same memory as fp16
+    amp_dtype = torch.bfloat16 if device == "cuda" else torch.float32
 
     post_pred = Compose([EnsureType(), AsDiscrete(argmax=True, to_onehot=NUM_CLASSES)])
     post_lbl = Compose([EnsureType(), AsDiscrete(to_onehot=NUM_CLASSES)])
@@ -104,13 +113,15 @@ def main():
         t0, tot = time.time(), 0.0
         pbar = tqdm(tr_dl, desc=f"epoch {epoch}/{a.epochs}", unit="batch")
         for batch in pbar:
-            x, y = batch["image"].to(device), batch["label"].to(device)
+            x = batch["image"].to(device, non_blocking=True)
+            y = batch["label"].to(device, non_blocking=True)
+            if device == "cuda":
+                x = x.contiguous(memory_format=torch.channels_last)
             opt.zero_grad(set_to_none=True)
-            with torch.amp.autocast(device, enabled=device == "cuda"):
+            with torch.autocast(device, dtype=amp_dtype, enabled=device == "cuda"):
                 loss = loss_fn(model(x), y)
-            scaler.scale(loss).backward()
-            scaler.step(opt)
-            scaler.update()
+            loss.backward()
+            opt.step()
             tot += loss.item() * x.size(0)
             pbar.set_postfix(loss=f"{loss.item():.4f}")
         sched.step()
@@ -122,8 +133,11 @@ def main():
         dice.reset()
         with torch.no_grad():
             for batch in tqdm(va_dl, desc="val", unit="img", leave=False):
-                x, y = batch["image"].to(device), batch["label"].to(device)
-                with torch.amp.autocast(device, enabled=device == "cuda"):
+                x = batch["image"].to(device, non_blocking=True)
+                y = batch["label"].to(device, non_blocking=True)
+                if device == "cuda":
+                    x = x.contiguous(memory_format=torch.channels_last)
+                with torch.autocast(device, dtype=amp_dtype, enabled=device == "cuda"):
                     out = sliding_window_inference(x, (CROP, CROP), a.batch_size, model)
                 dice(y_pred=[post_pred(o) for o in out], y=[post_lbl(o) for o in y])
         pc = dice.aggregate(reduction="mean_batch")  # (NUM_CLASSES-1,)
