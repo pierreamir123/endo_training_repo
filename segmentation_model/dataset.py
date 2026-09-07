@@ -18,8 +18,9 @@ from monai.transforms import (
 )
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-IMG_DIR = os.path.join(ROOT, "dataset", "image")
-LBL_DIR = os.path.join(ROOT, "dataset", "label")
+DATA_ROOT = os.environ.get("PRAD_DATA_ROOT", os.path.join(ROOT, "dataset"))  # ponytail: env override for Modal volume
+IMG_DIR = os.path.join(DATA_ROOT, "image")
+LBL_DIR = os.path.join(DATA_ROOT, "label")
 NUM_CLASSES = 10
 RESIZE = 512
 CROP = 256  # PRNet input_size is fixed at this
@@ -27,7 +28,7 @@ CROP = 256  # PRNet input_size is fixed at this
 
 def class_names():
     names = {0: "background"}
-    with open(os.path.join(ROOT, "dataset", "label distribution.txt")) as f:
+    with open(os.path.join(DATA_ROOT, "label distribution.txt")) as f:
         for line in f:
             line = line.strip()
             if line:
