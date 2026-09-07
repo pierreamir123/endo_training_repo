@@ -1,4 +1,6 @@
 .env
+.env.modal
+segmentation_model/.env.modal
 segmentation_model/runs/
 segmentation_model/wandb/
 wandb/
