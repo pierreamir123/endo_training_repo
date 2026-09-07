@@ -43,6 +43,8 @@ VOLS = {"/data": data_vol, f"{REPO}/segmentation_model/runs": runs_vol}
 def fetch_data():
     """Download + unzip the Google Drive dataset zip into the prad-data Volume."""
     file_id = os.environ["GDRIVE_ID"]
+    if "/d/" in file_id:  # accept a full .../d/<ID>/view URL too
+        file_id = file_id.split("/d/")[1].split("/")[0]
     if os.path.exists("/data/image"):
         print("/data already populated; skipping. Delete the Volume to re-fetch.")
         return
