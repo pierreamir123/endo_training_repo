@@ -64,8 +64,22 @@ def fetch_data():
 
 @app.function(image=image, gpu=GPU, volumes=VOLS, timeout=24 * 60 * 60,
               secrets=[modal.Secret.from_dict({"PRAD_DATA_ROOT": "/data"})])
-def train(args: str = "--epochs 60 --batch-size 4 --wandb offline"):
+def train(args: str = "--epochs 100 --batch-size 4 --wandb offline"):
+    import threading
+
     os.chdir(f"{REPO}/segmentation_model")
     subprocess.run([sys.executable, "make_splits.py"], check=True)
-    subprocess.run([sys.executable, "train.py", *args.split()], check=True)
-    runs_vol.commit()
+
+    # ponytail: train.py writes best/last.pt every epoch; commit the Volume every 3 min
+    # so a crash or timeout still leaves the latest weights recoverable.
+    stop = threading.Event()
+    def flush():
+        while not stop.wait(180):
+            runs_vol.commit()
+    t = threading.Thread(target=flush, daemon=True)
+    t.start()
+    try:
+        subprocess.run([sys.executable, "train.py", *args.split()], check=True)
+    finally:
+        stop.set()
+        runs_vol.commit()
