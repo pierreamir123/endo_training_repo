@@ -22,7 +22,7 @@ import sys
 
 import modal
 
-GPU = os.environ.get("MODAL_GPU", "A10G")
+GPU = os.environ.get("MODAL_GPU", "T4")  # 16 GB; --batch-size 4-6 fits
 REPO = "/root/repo"
 
 image = (
@@ -64,7 +64,7 @@ def fetch_data():
 
 @app.function(image=image, gpu=GPU, volumes=VOLS, timeout=24 * 60 * 60,
               secrets=[modal.Secret.from_dict({"PRAD_DATA_ROOT": "/data"})])
-def train(args: str = "--epochs 60 --wandb offline"):
+def train(args: str = "--epochs 60 --batch-size 4 --wandb offline"):
     os.chdir(f"{REPO}/segmentation_model")
     subprocess.run([sys.executable, "make_splits.py"], check=True)
     subprocess.run([sys.executable, "train.py", *args.split()], check=True)
