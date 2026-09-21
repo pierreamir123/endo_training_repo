@@ -96,7 +96,10 @@ def main():
     opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=a.epochs)
     # Ada does bf16 natively -> no GradScaler (no inf/nan stalls), same memory as fp16
-    amp_dtype = torch.bfloat16 if device == "cuda" else torch.float32
+    # ponytail: pre-Ampere (T4) has no bf16 -> fp16 + GradScaler
+    bf16 = device == "cuda" and torch.cuda.is_bf16_supported(including_emulation=False)
+    amp_dtype = torch.bfloat16 if bf16 else torch.float16 if device == "cuda" else torch.float32
+    scaler = torch.amp.GradScaler(enabled=amp_dtype == torch.float16)
 
     post_pred = Compose([EnsureType(), AsDiscrete(argmax=True, to_onehot=NUM_CLASSES)])
     post_lbl = Compose([EnsureType(), AsDiscrete(to_onehot=NUM_CLASSES)])
@@ -120,8 +123,9 @@ def main():
             opt.zero_grad(set_to_none=True)
             with torch.autocast(device, dtype=amp_dtype, enabled=device == "cuda"):
                 loss = loss_fn(model(x), y)
-            loss.backward()
-            opt.step()
+            scaler.scale(loss).backward()
+            scaler.step(opt)
+            scaler.update()
             tot += loss.item() * x.size(0)
             pbar.set_postfix(loss=f"{loss.item():.4f}")
         sched.step()

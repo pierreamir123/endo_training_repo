@@ -30,7 +30,8 @@ image = (
     .apt_install("git", "unzip")
     .pip_install("gdown")
     .pip_install_from_requirements("segmentation_model/requirements-train.txt")
-    .add_local_dir("segmentation_model", f"{REPO}/segmentation_model", copy=True)
+    .add_local_dir("segmentation_model", f"{REPO}/segmentation_model", copy=True,
+                   ignore=["runs", "**/__pycache__", "*.ipynb", ".env*", "*.pt"])
 )
 
 app = modal.App("prad-prnet")
@@ -39,7 +40,8 @@ runs_vol = modal.Volume.from_name("prad-runs", create_if_missing=True)
 VOLS = {"/data": data_vol, f"{REPO}/segmentation_model/runs": runs_vol}
 
 
-@app.function(image=image, volumes={"/data": data_vol}, timeout=60 * 60)
+@app.function(image=image, volumes={"/data": data_vol}, timeout=60 * 60,
+              secrets=[modal.Secret.from_name("endo")])
 def fetch_data():
     """Download + unzip the Google Drive dataset zip into the prad-data Volume."""
     file_id = os.environ["GDRIVE_ID"]
@@ -65,7 +67,8 @@ def fetch_data():
 
 
 @app.function(image=image, gpu=GPU, volumes=VOLS, timeout=24 * 60 * 60,
-              secrets=[modal.Secret.from_dict({"PRAD_DATA_ROOT": "/data"})])
+              secrets=[modal.Secret.from_name("endo"),
+                       modal.Secret.from_dict({"PRAD_DATA_ROOT": "/data"})])
 def train(args: str = "--epochs 100 --batch-size 4 --wandb offline"):
     import threading
 
