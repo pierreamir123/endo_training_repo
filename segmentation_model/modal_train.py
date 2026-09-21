@@ -66,7 +66,7 @@ def fetch_data():
     print("done:", os.listdir("/data"))
 
 
-@app.function(image=image, gpu=GPU, volumes=VOLS, timeout=24 * 60 * 60,
+@app.function(image=image, gpu=GPU, volumes=VOLS, timeout=24 * 60 * 60, cpu=8, memory=16384,
               secrets=[modal.Secret.from_name("endo"),
                        modal.Secret.from_dict({"PRAD_DATA_ROOT": "/data"})])
 def train(args: str = "--epochs 100 --batch-size 4 --wandb offline"):

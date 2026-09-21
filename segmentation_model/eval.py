@@ -77,7 +77,7 @@ def main():
         for i, batch in enumerate(dl):
             x = batch["image"].to(device)
             y = batch["label"].to(device)
-            with torch.amp.autocast(device, enabled=device == "cuda"):
+            with torch.amp.autocast(device, dtype=torch.bfloat16, enabled=device == "cuda"):
                 out = sliding_window_inference(x, (CROP, CROP), 2, model)
             p = [post_pred(o) for o in out]
             t = [post_lbl(o) for o in y]

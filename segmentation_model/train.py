@@ -113,23 +113,32 @@ def main():
     best, best_path = -1.0, os.path.join(out_dir, "best.pt")
     for epoch in range(1, a.epochs + 1):
         model.train()
-        t0, tot = time.time(), 0.0
+        t0, tot, skipped = time.time(), torch.zeros((), device=device), 0
         pbar = tqdm(tr_dl, desc=f"epoch {epoch}/{a.epochs}", unit="batch")
-        for batch in pbar:
+        for i, batch in enumerate(pbar):
             x = batch["image"].to(device, non_blocking=True)
             y = batch["label"].to(device, non_blocking=True)
             if device == "cuda":
                 x = x.contiguous(memory_format=torch.channels_last)
             opt.zero_grad(set_to_none=True)
             with torch.autocast(device, dtype=amp_dtype, enabled=device == "cuda"):
-                loss = loss_fn(model(x), y)
+                logits = model(x)
+            loss = loss_fn(logits.float(), y)  # loss in fp32: fp16 overflow -> NaN on T4
+            if not torch.isfinite(loss):  # skip a bad batch instead of poisoning the weights
+                skipped += 1
+                continue
             scaler.scale(loss).backward()
+            scaler.unscale_(opt)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             scaler.step(opt)
             scaler.update()
-            tot += loss.item() * x.size(0)
-            pbar.set_postfix(loss=f"{loss.item():.4f}")
+            tot += loss.detach() * x.size(0)  # stays on GPU: .item() per step stalls the pipeline
+            if i % 20 == 0:
+                pbar.set_postfix(loss=f"{loss.item():.4f}")
+        if skipped:
+            print(f"  WARN: skipped {skipped} non-finite-loss batches")
         sched.step()
-        train_loss = tot / len(tr)
+        train_loss = tot.item() / len(tr)
 
         if device == "cuda":
             torch.cuda.empty_cache()  # release train-phase blocks before sliding-window eval
