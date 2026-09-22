@@ -32,7 +32,8 @@ from monai.losses import DiceFocalLoss
 from monai.metrics import DiceMetric
 from monai.transforms import AsDiscrete, Compose, EnsureType
 
-from dataset import NUM_CLASSES, CROP, IN_CHANNELS, class_names, list_pairs, train_transforms, eval_transforms
+from dataset import (NUM_CLASSES, CROP, IN_CHANNELS, PREP_VERSION, class_names, list_pairs,
+                     train_transforms, eval_transforms, load_transforms, train_post, eval_post)
 from model import PRNet
 from wbutil import wandb_init
 
@@ -49,8 +50,8 @@ def parse():
                         "ram: CacheDataset (needs ~20GB free RAM at rate 1.0); none: reload each epoch")
     p.add_argument("--cache-rate", type=float, default=1.0, help="fraction cached when --cache ram")
     p.add_argument("--cache-dir", default=None,
-                   help="disk cache location (default: <out>/<name>/cache); "
-                        "use local disk here, not a network volume, on cloud runs")
+                   help="disk cache location (default: <out>/<name>/cache). With --cache ram, "
+                        "preprocessed arrays persist here and later runs just reload them")
     p.add_argument("--workers", type=int, default=6)
     p.add_argument("--name", default=None, help="run name (default: prnet-<timestamp>)")
     p.add_argument("--wandb", default="online", choices=["online", "offline", "disabled"])
@@ -77,13 +78,20 @@ def main():
     run = wandb_init(a.name, "train", vars(a), a.wandb)
 
     tr_pairs, va_pairs = list_pairs("train", a.limit), list_pairs("val", a.limit)
+    # caches are keyed by PREP_VERSION -> changing the preprocessing never reuses stale arrays
+    cdir = os.path.join(a.cache_dir or os.path.join(out_dir, "cache"), PREP_VERSION)
     if a.cache == "disk":
-        cdir = a.cache_dir or os.path.join(out_dir, "cache")
         tr = PersistentDataset(tr_pairs, train_transforms, cache_dir=cdir)
         va = PersistentDataset(va_pairs, eval_transforms, cache_dir=cdir)
     elif a.cache == "ram":
-        tr = CacheDataset(tr_pairs, train_transforms, cache_rate=a.cache_rate, num_workers=a.workers)
-        va = Dataset(va_pairs, eval_transforms)
+        if a.cache_dir:  # preprocess once to disk (survives runs), then hold in RAM
+            tr_src = PersistentDataset(tr_pairs, load_transforms, cache_dir=cdir)
+            va_src = PersistentDataset(va_pairs, load_transforms, cache_dir=cdir)
+            tr = CacheDataset(tr_src, train_post, cache_rate=a.cache_rate, num_workers=a.workers)
+            va = CacheDataset(va_src, eval_post, num_workers=a.workers)
+        else:
+            tr = CacheDataset(tr_pairs, train_transforms, cache_rate=a.cache_rate, num_workers=a.workers)
+            va = CacheDataset(va_pairs, eval_transforms, num_workers=a.workers)  # val was uncached -> AHE every epoch
     else:
         tr = Dataset(tr_pairs, train_transforms)
         va = Dataset(va_pairs, eval_transforms)
@@ -98,7 +106,15 @@ def main():
         model = model.to(memory_format=torch.channels_last)
     loss_fn = DiceFocalLoss(softmax=True, to_onehot_y=True)
     opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=1e-4)
-    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=a.epochs)
+    # ponytail: PRNet's Encoder.conv_para/wtconv_para are unbounded per-pixel gain params
+    # (init 1.0, no norm after them) -> can drift large early on and overflow fp16 forward
+    # (inf logits, not a gradient issue - GradScaler can't catch it). Warm up LR to avoid
+    # violent early updates, and hard-clamp those gains every step as a backstop.
+    warmup_steps = max(1, len(tr_dl) // 2)  # ~half an epoch
+    warmup = torch.optim.lr_scheduler.LinearLR(opt, start_factor=0.1, total_iters=warmup_steps)
+    cosine = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=a.epochs * len(tr_dl) - warmup_steps)
+    sched = torch.optim.lr_scheduler.SequentialLR(opt, [warmup, cosine], milestones=[warmup_steps])
+    gain_params = [p for n, p in model.named_parameters() if n.endswith("conv_para") or n.endswith("wtconv_para")]
     # Ada does bf16 natively -> no GradScaler (no inf/nan stalls), same memory as fp16
     # ponytail: pre-Ampere (T4) has no bf16 -> fp16 + GradScaler
     bf16 = device == "cuda" and torch.cuda.is_bf16_supported(including_emulation=False)
@@ -136,12 +152,19 @@ def main():
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             scaler.step(opt)
             scaler.update()
+            sched.step()
+            with torch.no_grad():  # backstop: hard-bound the unbounded per-pixel gain params
+                for p in gain_params:
+                    p.clamp_(-4.0, 4.0)
             tot += loss.detach() * x.size(0)  # stays on GPU: .item() per step stalls the pipeline
             if i % 20 == 0:
                 pbar.set_postfix(loss=f"{loss.item():.4f}")
         if skipped:
             print(f"  WARN: skipped {skipped} non-finite-loss batches")
-        sched.step()
+            if skipped > len(tr_dl) // 2:
+                raise RuntimeError(
+                    f"epoch {epoch}: {skipped}/{len(tr_dl)} batches non-finite - "
+                    "training has diverged, aborting instead of burning more GPU hours")
         train_loss = tot.item() / len(tr)
 
         if device == "cuda":

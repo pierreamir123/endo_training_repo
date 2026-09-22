@@ -70,18 +70,28 @@ def _clip01(x):  # module-level (Lambdad lambdas don't pickle for Windows DataLo
     return x.clip(0.0, 1.0)
 
 
+AHE_RADIUS = 6  # ~20 px at native 1600 res, scaled to RESIZE
+# Bump when the deterministic stage (_LOAD) changes: on-disk caches are keyed by it.
+PREP_VERSION = f"gray-{RESIZE}-ahe{AHE_RADIUS}"
+
+
 class ItkPreprocessd(MapTransform):
     """RGB(-as-gray) jpg -> 1-channel grayscale, then ITK adaptive histogram equalization.
 
-    Runs at native resolution before the letterbox resize. Deterministic, so
-    PersistentDataset caches its output. Module-level class -> picklable for workers."""
+    Runs AFTER the resize, before padding: ITK AHE is ~2.5 CPU-s/img at native res vs
+    ~0.6 s at 512 (and pad zeros stay out of its histograms). Deterministic, so the
+    caches store its output. Module-level class -> picklable for workers."""
+
+    def __init__(self, keys, radius=AHE_RADIUS):
+        super().__init__(keys)
+        self.radius = radius
 
     def __call__(self, data):
         d = dict(data)
         for k in self.keys:
             x = np.asarray(d[k], dtype=np.float32).mean(axis=0)          # CHW -> HW gray
             im = sitk.RescaleIntensity(sitk.GetImageFromArray(x), 0.0, 1.0)
-            im = sitk.AdaptiveHistogramEqualization(im, radius=[20, 20], alpha=0.5, beta=0.5)
+            im = sitk.AdaptiveHistogramEqualization(im, radius=[self.radius] * 2, alpha=0.5, beta=0.5)
             im = sitk.RescaleIntensity(im, 0.0, 1.0)
             d[k] = sitk.GetArrayFromImage(im)[None]                       # -> 1HW
         return d
@@ -91,10 +101,10 @@ _LOAD = [
     LoadImaged(keys=["image", "label"], reader="PILReader", image_only=True),
     EnsureChannelFirstd(keys="image"),                       # HWC -> CHW
     EnsureChannelFirstd(keys="label", channel_dim="no_channel"),  # HW -> 1HW
-    ItkPreprocessd(keys="image"),                            # grayscale + ITK CLAHE, in [0, 1]
     # keep aspect ratio (dataset mixes 1600x1200 and 1200x1600): longest side -> RESIZE, then pad
     Resized(keys=["image", "label"], spatial_size=RESIZE, size_mode="longest",
             mode=("bilinear", "nearest")),
+    ItkPreprocessd(keys="image"),                            # grayscale + ITK AHE, in [0, 1]
     ResizeWithPadOrCropd(keys=["image", "label"], spatial_size=(RESIZE, RESIZE)),  # pads with 0 (bg)
 ]
 _FINALIZE = [
@@ -104,7 +114,7 @@ _FINALIZE = [
     EnsureTyped(keys=["image", "label"]),
 ]
 
-train_transforms = Compose(_LOAD + [
+_AUG = [
     RandSpatialCropd(keys=["image", "label"], roi_size=(CROP, CROP), random_size=False),
     RandFlipd(keys=["image", "label"], spatial_axis=1, prob=0.5),
     RandRotate90d(keys=["image", "label"], prob=0.3),  # dataset has both sensor orientations
@@ -115,9 +125,14 @@ train_transforms = Compose(_LOAD + [
     RandScaleIntensityd(keys="image", factors=0.1, prob=0.3),
     RandAdjustContrastd(keys="image", prob=0.3, gamma=(0.7, 1.5)),
     Lambdad(keys="image", func=_clip01),  # intensity augs can exceed [0, 1]
-] + _FINALIZE)
+]
 
+train_transforms = Compose(_LOAD + _AUG + _FINALIZE)
 eval_transforms = Compose(_LOAD + _FINALIZE)
+# split stages: deterministic prefix (cacheable once, e.g. on disk) + what runs after it
+load_transforms = Compose(_LOAD)
+train_post = Compose(_AUG + _FINALIZE)
+eval_post = Compose(_FINALIZE)
 
 
 if __name__ == "__main__":

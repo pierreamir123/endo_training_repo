@@ -22,7 +22,7 @@ import sys
 
 import modal
 
-GPU = os.environ.get("MODAL_GPU", "T4")  # 16 GB; --batch-size 4-6 fits
+GPU = os.environ.get("MODAL_GPU", "A10G")  # 24 GB, native bf16 (no fp16 overflow); T4 is cheaper but fp16-only
 REPO = "/root/repo"
 
 image = (
@@ -66,10 +66,17 @@ def fetch_data():
     print("done:", os.listdir("/data"))
 
 
-@app.function(image=image, gpu=GPU, volumes=VOLS, timeout=24 * 60 * 60, cpu=8, memory=16384,
+# ponytail: timeout doubles as a spend cap (A10G + 6 CPU + 12 GiB ~ $1.48/h); weights are
+# committed every 3 min, so hitting it still leaves best/last.pt. MODAL_TIMEOUT_H=3.3 -> ~$5.
+TIMEOUT = int(float(os.environ.get("MODAL_TIMEOUT_H", 24)) * 3600)
+
+
+# RAM cache only (~9.5 GB, rebuilt each run in ~8 min). A disk cache on the Volume was tried:
+# reads ran ~4 files/s (slower than recomputing) and a stopped run left truncated files.
+@app.function(image=image, gpu=GPU, volumes=VOLS, timeout=TIMEOUT, cpu=6, memory=12288,
               secrets=[modal.Secret.from_name("endo"),
                        modal.Secret.from_dict({"PRAD_DATA_ROOT": "/data"})])
-def train(args: str = "--epochs 100 --batch-size 8 --cache-dir /tmp/prad_cache --wandb offline"):
+def train(args: str = "--epochs 18 --batch-size 8 --workers 6 --cache ram --wandb offline"):
     import threading
 
     os.chdir(f"{REPO}/segmentation_model")
