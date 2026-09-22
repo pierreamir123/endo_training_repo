@@ -17,7 +17,7 @@ from monai.metrics import DiceMetric, MeanIoU
 from monai.transforms import AsDiscrete, Compose, EnsureType
 from PIL import Image
 
-from dataset import NUM_CLASSES, CROP, class_names, list_pairs, eval_transforms
+from dataset import NUM_CLASSES, CROP, IN_CHANNELS, class_names, list_pairs, eval_transforms
 from model import PRNet
 from wbutil import wandb_init
 
@@ -58,7 +58,7 @@ def main():
     ds = Dataset(list_pairs(a.split, a.limit), eval_transforms)
     dl = DataLoader(ds, batch_size=1, num_workers=2)
 
-    model = PRNet(in_channels=3, num_classes=NUM_CLASSES, input_size=CROP).to(device)
+    model = PRNet(in_channels=IN_CHANNELS, num_classes=NUM_CLASSES, input_size=CROP).to(device)
     ckpt = torch.load(a.ckpt, map_location=device)
     model.load_state_dict(ckpt["model"])
     model.eval()

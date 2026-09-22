@@ -1,0 +1,11 @@
+{
+  "python.defaultInterpreterPath": "C:/Users/pierre bassily/miniconda3/envs/endo/python.exe",
+  "python.envFile": "${workspaceFolder}/.vscode/.env",
+  "python.analysis.extraPaths": ["${workspaceFolder}/segmentation_model"],
+  "python.terminal.activateEnvironment": true,
+  "terminal.integrated.env.windows": {
+    "PYTHONPATH": "${workspaceFolder}/segmentation_model"
+  },
+  "jupyter.notebookFileRoot": "${fileDirname}",
+  "notebook.output.textLineLimit": 60
+}

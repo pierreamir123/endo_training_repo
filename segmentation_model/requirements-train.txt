@@ -10,3 +10,4 @@ monai==1.6.0
 PyWavelets==1.9.0
 wandb==0.29.0
 tqdm==4.70.0
+SimpleITK==2.5.6

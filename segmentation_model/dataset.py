@@ -9,12 +9,14 @@ sliding-window (256) over the 512 image (see train.py / eval.py).
 """
 import os
 
+import numpy as np
+import SimpleITK as sitk
 import torch
 from monai.transforms import (
     Compose, LoadImaged, EnsureChannelFirstd, ScaleIntensityd, Resized,
     ResizeWithPadOrCropd, RandSpatialCropd, RandFlipd, RandRotate90d, RandAffined,
     RandGaussianNoised, RandScaleIntensityd, RandAdjustContrastd, Lambdad,
-    CastToTyped, EnsureTyped,
+    CastToTyped, EnsureTyped, MapTransform, NormalizeIntensityd,
 )
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -24,6 +26,7 @@ LBL_DIR = os.path.join(DATA_ROOT, "label")
 NUM_CLASSES = 10
 RESIZE = 512
 CROP = 256  # PRNet input_size is fixed at this
+IN_CHANNELS = 1  # grayscale
 
 
 def class_names():
@@ -67,17 +70,36 @@ def _clip01(x):  # module-level (Lambdad lambdas don't pickle for Windows DataLo
     return x.clip(0.0, 1.0)
 
 
+class ItkPreprocessd(MapTransform):
+    """RGB(-as-gray) jpg -> 1-channel grayscale, then ITK adaptive histogram equalization.
+
+    Runs at native resolution before the letterbox resize. Deterministic, so
+    PersistentDataset caches its output. Module-level class -> picklable for workers."""
+
+    def __call__(self, data):
+        d = dict(data)
+        for k in self.keys:
+            x = np.asarray(d[k], dtype=np.float32).mean(axis=0)          # CHW -> HW gray
+            im = sitk.RescaleIntensity(sitk.GetImageFromArray(x), 0.0, 1.0)
+            im = sitk.AdaptiveHistogramEqualization(im, radius=[50, 50], alpha=0.5, beta=0.5)
+            im = sitk.RescaleIntensity(im, 0.0, 1.0)
+            d[k] = sitk.GetArrayFromImage(im)[None]                       # -> 1HW
+        return d
+
+
 _LOAD = [
     LoadImaged(keys=["image", "label"], reader="PILReader", image_only=True),
     EnsureChannelFirstd(keys="image"),                       # HWC -> CHW
     EnsureChannelFirstd(keys="label", channel_dim="no_channel"),  # HW -> 1HW
-    ScaleIntensityd(keys="image"),                           # -> [0, 1]
+    ItkPreprocessd(keys="image"),                            # grayscale + ITK CLAHE, in [0, 1]
     # keep aspect ratio (dataset mixes 1600x1200 and 1200x1600): longest side -> RESIZE, then pad
     Resized(keys=["image", "label"], spatial_size=RESIZE, size_mode="longest",
             mode=("bilinear", "nearest")),
     ResizeWithPadOrCropd(keys=["image", "label"], spatial_size=(RESIZE, RESIZE)),  # pads with 0 (bg)
 ]
 _FINALIZE = [
+    # z-score per image over non-pad pixels (letterbox zeros stay 0)
+    NormalizeIntensityd(keys="image", nonzero=True, channel_wise=True),
     CastToTyped(keys="label", dtype=torch.long),
     EnsureTyped(keys=["image", "label"]),
 ]
@@ -103,7 +125,7 @@ if __name__ == "__main__":
         print(f"{w:5s}: {len(list_pairs(w))}")
     pair = list_pairs("train", limit=1)[0]
     ev = eval_transforms(dict(pair))
-    assert tuple(ev["image"].shape) == (3, RESIZE, RESIZE), ev["image"].shape
+    assert tuple(ev["image"].shape) == (IN_CHANNELS, RESIZE, RESIZE), ev["image"].shape
     assert tuple(ev["label"].shape) == (1, RESIZE, RESIZE), ev["label"].shape
 
     mins = []
@@ -111,9 +133,9 @@ if __name__ == "__main__":
         sample = train_transforms(dict(pair))
         img, lbl = sample["image"], sample["label"]
         mins.append(float(img.min()))
-        assert tuple(img.shape) == (3, CROP, CROP)
+        assert tuple(img.shape) == (IN_CHANNELS, CROP, CROP)
         assert tuple(lbl.shape) == (1, CROP, CROP)
-        assert 0 <= img.min() and img.max() <= 1, (float(img.min()), float(img.max()))
+        assert abs(float(img[img != 0].mean())) < 0.2 and 0.8 < float(img[img != 0].std()) < 1.2,             (float(img.mean()), float(img.std()))  # z-score normalised
         assert lbl.min() >= 0 and lbl.max() < NUM_CLASSES
     print("image", tuple(img.shape), img.dtype, "min over 20 draws", round(min(mins), 4))
     print("label", tuple(lbl.shape), lbl.dtype, "classes", sorted(set(lbl.unique().tolist())))

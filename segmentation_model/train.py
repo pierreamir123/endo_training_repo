@@ -32,7 +32,7 @@ from monai.losses import DiceFocalLoss
 from monai.metrics import DiceMetric
 from monai.transforms import AsDiscrete, Compose, EnsureType
 
-from dataset import NUM_CLASSES, CROP, class_names, list_pairs, train_transforms, eval_transforms
+from dataset import NUM_CLASSES, CROP, IN_CHANNELS, class_names, list_pairs, train_transforms, eval_transforms
 from model import PRNet
 from wbutil import wandb_init
 
@@ -89,7 +89,7 @@ def main():
     va_dl = DataLoader(va, batch_size=1, num_workers=a.workers,
                        pin_memory=True, persistent_workers=_pw)
 
-    model = PRNet(in_channels=3, num_classes=NUM_CLASSES, input_size=CROP).to(device)
+    model = PRNet(in_channels=IN_CHANNELS, num_classes=NUM_CLASSES, input_size=CROP).to(device)
     if device == "cuda":
         model = model.to(memory_format=torch.channels_last)
     loss_fn = DiceFocalLoss(softmax=True, to_onehot_y=True)
@@ -185,7 +185,7 @@ def main():
         try:
             model.load_state_dict(torch.load(best_path, map_location=device)["model"])
             model.eval()
-            example = torch.randn(1, 3, CROP, CROP, device=device)
+            example = torch.randn(1, IN_CHANNELS, CROP, CROP, device=device)
             with torch.no_grad():
                 # check_trace off: model.py channel_shuffle() uses random.shuffle, so two
                 # forwards differ. The trace freezes one permutation - fine for inference.
