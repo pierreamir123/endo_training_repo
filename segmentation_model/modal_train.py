@@ -73,7 +73,7 @@ def train(args: str = "--epochs 100 --batch-size 4 --wandb offline"):
     import threading
 
     os.chdir(f"{REPO}/segmentation_model")
-    subprocess.run([sys.executable, "make_splits.py"], check=True)
+    assert os.path.exists("splits.txt"), "splits.txt missing"  # balanced split ships with the code; do NOT regenerate
 
     # ponytail: train.py writes best/last.pt every epoch; commit the Volume every 3 min
     # so a crash or timeout still leaves the latest weights recoverable.
