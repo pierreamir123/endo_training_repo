@@ -42,12 +42,16 @@ def parse():
     p.add_argument("--epochs", type=int, default=100)
     p.add_argument("--batch-size", type=int, default=2)  # DiceFocal peaks ~5 GB at bs=2 on the 6 GB RTX 4050; bs=4 OOMs
     p.add_argument("--lr", type=float, default=2e-4)
+    p.add_argument("--patience", type=int, default=15, help="early stop after N epochs without val-dice improvement (0 = off)")
     p.add_argument("--limit", type=int, default=None, help="cap samples per split (smoke)")
     p.add_argument("--cache", default="disk", choices=["none", "ram", "disk"],
                    help="disk: PersistentDataset (~21GB in out/<name>/cache); "
                         "ram: CacheDataset (needs ~20GB free RAM at rate 1.0); none: reload each epoch")
     p.add_argument("--cache-rate", type=float, default=1.0, help="fraction cached when --cache ram")
-    p.add_argument("--workers", type=int, default=4)
+    p.add_argument("--cache-dir", default=None,
+                   help="disk cache location (default: <out>/<name>/cache); "
+                        "use local disk here, not a network volume, on cloud runs")
+    p.add_argument("--workers", type=int, default=6)
     p.add_argument("--name", default=None, help="run name (default: prnet-<timestamp>)")
     p.add_argument("--wandb", default="online", choices=["online", "offline", "disabled"])
     p.add_argument("--out", default=os.path.join(os.path.dirname(__file__), "runs"))
@@ -74,7 +78,7 @@ def main():
 
     tr_pairs, va_pairs = list_pairs("train", a.limit), list_pairs("val", a.limit)
     if a.cache == "disk":
-        cdir = os.path.join(out_dir, "cache")
+        cdir = a.cache_dir or os.path.join(out_dir, "cache")
         tr = PersistentDataset(tr_pairs, train_transforms, cache_dir=cdir)
         va = PersistentDataset(va_pairs, eval_transforms, cache_dir=cdir)
     elif a.cache == "ram":
@@ -110,7 +114,7 @@ def main():
     with open(csv_path, "w", newline="") as f:
         csv.writer(f).writerow(["epoch", "train_loss", "val_dice", "lr", "sec"])
 
-    best, best_path = -1.0, os.path.join(out_dir, "best.pt")
+    best, best_path, stale = -1.0, os.path.join(out_dir, "best.pt"), 0
     for epoch in range(1, a.epochs + 1):
         model.train()
         t0, tot, skipped = time.time(), torch.zeros((), device=device), 0
@@ -175,6 +179,12 @@ def main():
             torch.save(ckpt, best_path)
             shutil.copy(best_path, os.path.join(a.out, "best.pt"))
             print(f"  new best {best:.4f}")
+            stale = 0
+        else:
+            stale += 1
+            if a.patience and stale >= a.patience:
+                print(f"early stop: no val_dice improvement in {a.patience} epochs (best {best:.4f})")
+                break
 
     run.summary["best/val_dice"] = best
     run.finish()

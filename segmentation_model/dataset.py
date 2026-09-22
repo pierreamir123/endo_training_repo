@@ -81,7 +81,7 @@ class ItkPreprocessd(MapTransform):
         for k in self.keys:
             x = np.asarray(d[k], dtype=np.float32).mean(axis=0)          # CHW -> HW gray
             im = sitk.RescaleIntensity(sitk.GetImageFromArray(x), 0.0, 1.0)
-            im = sitk.AdaptiveHistogramEqualization(im, radius=[50, 50], alpha=0.5, beta=0.5)
+            im = sitk.AdaptiveHistogramEqualization(im, radius=[20, 20], alpha=0.5, beta=0.5)
             im = sitk.RescaleIntensity(im, 0.0, 1.0)
             d[k] = sitk.GetArrayFromImage(im)[None]                       # -> 1HW
         return d
